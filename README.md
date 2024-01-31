@@ -33,7 +33,7 @@ ESP32
 
   
 ## Block Definition Diagram for the System
-![alt text](./images/Fota System.png)
+![alt text](./images/FotaSystem.png)
 
 ## Telematics Unit
 ### Getting Started
