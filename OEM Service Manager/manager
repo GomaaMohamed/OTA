@@ -1,0 +1,405 @@
+# Used libraries
+import paho.mqtt.client as mqtt
+import threading
+import os
+from Crypto.Cipher import DES3
+from Crypto import Random
+import base64
+import bcrypt
+import json
+import time
+import hashlib
+import sys
+
+# Function to clear the console screen
+def clear_screen():
+    os.system('cls' if os.name == 'nt' else 'clear')
+            
+# Function to register a user
+def register_user(username, password):
+    # Generate a salt and hash the password
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
+    # Store the username and hashed password in a JSON file
+    store_user_credentials(username, hashed_password)
+
+def store_user_credentials(username, hashed_password):
+    # Load existing user data
+    try:
+        with open('/home/pass', 'r') as file:
+            users = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        users = {}
+    # Add the new user's credentials
+    users[username] = hashed_password
+    # Save the updated user data
+    with open('/home/pass', 'w') as file:
+        json.dump(users, file)
+
+# Function to verify a user's credentials
+def verify_user(username, password):
+    try:
+        with open('/home/pass', 'r') as file:
+            users = json.load(file)
+            if username in users:
+                stored_hashed_password = users[username]
+                return bcrypt.checkpw(password.encode('utf-8'), stored_hashed_password)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return False
+
+# Function to calculate Sha-256
+def calculate_sha256(text):
+    # Create a SHA-256 hash object
+    sha256 = hashlib.sha256()
+    # Update the hash object with the text encoded as bytes
+    sha256.update(text.encode('utf-8'))
+    # Get the hexadecimal representation of the hash
+    sha256_hex = sha256.hexdigest()
+    return sha256_hex
+
+# Previous Service
+previous_service = "initial"
+first_flag = False
+
+# Main program
+def main():
+    # Decrypted message variable
+    decrypted_message = " "
+    global previous_service
+
+    # Project banner
+    banner = [
+        "██  ███╗   ██╗████████╗██╗               ██████╗ ████████╗ █████╗   █                                             ██",
+        "██  ████╗  ██║╚══██╔══╝██║              ██╔═══██╗╚══██╔══╝██╔══██╗  █═> Diagnostics Over The Air is supported     ██",
+        "██  ██╔██╗ ██║   ██║   ██║    █████╗    ██║   ██║   ██║   ███████║  █═> Firmware Over The Air is supported        ██",
+        "██  ██║╚██╗██║   ██║   ██║    ╚════╝    ██║   ██║   ██║   ██╔══██║  █═> To use any service you must unlock        ██",
+        "██  ██║ ╚████║   ██║   ██║              ╚██████╔╝   ██║   ██║  ██║  █   its security level                        ██",
+        "██  ╚═╝  ╚═══╝   ╚═╝   ╚═╝               ╚═════╝    ╚═╝   ╚═╝  ╚═╝  █═> Service Format:                           ██",
+        "██                                                                  █   <SID>  <Sub-Function ID>  <Parameters>    ██",
+    ]
+
+    # MQTT Broker Parameters
+    broker_url = "b8ba2b5a4d0048be8202a20c2044769c.s1.eu.hivemq.cloud"
+    broker_port = 8883
+    request_topic = "NTIOTA1"
+    response_topic = "NTIOTA2"
+    username = "NtiTeam"
+    password = "NtiTeam_2023"
+
+    # Initialize the MQTT Client
+    client = mqtt.Client()
+
+    # Define encryption key here (24 bytes for Triple DES)
+    encryption_key = b'ntiteamntiteamntiteamnti'
+
+    # DES encryption block size (in bytes)
+    DES_BLOCK_SIZE = 8
+
+    # Function to pad the messages which isn't multiple of 8
+    def pad(text):
+        # Calculate the padding length needed
+        padding_length = DES_BLOCK_SIZE - (len(text) % DES_BLOCK_SIZE)
+        # Pad the text with bytes of the padding length
+        text += bytes([padding_length] * padding_length)
+        return text
+
+    # Function to unpad the messages which isn't multiple of 8
+    def unpad(text):
+        # Check if the text has a valid length
+        if len(text) > 0:
+            # Remove the PKCS7 padding
+            padding_length = text[-1]
+            return text[:-padding_length]
+        else:
+            pad_response = "Pad Response"
+            return pad_response
+
+    # Function to encrypt a message
+    def encrypt_message(key, plaintext):
+        plaintext = pad(plaintext)
+        cipher = DES3.new(key, DES3.MODE_ECB)
+        ciphertext = cipher.encrypt(plaintext)
+        return ciphertext
+
+    # Function to decrypt a message
+    def decrypt_message(key, ciphertext):
+        cipher = DES3.new(key, DES3.MODE_ECB)
+        decrypted_text = cipher.decrypt(ciphertext)
+        return unpad(decrypted_text)
+
+    # Callback when the client is connected to the MQTT broker
+    def on_connect(client, userdata, flags, rc):
+        clear_screen()
+        print("████████████████████████████████████████████████████████████████████████████████████████████████████████████████████")
+        print("██                                                                  █                                             ██")
+        print("██                                                                  ███████  Over The Air Service Manager   ████████")
+        # Display the "NTI" banner
+        for line in banner:
+            print(line)
+        print("██           Welcome to Over The Air Service Manager                █═> To show the supported services enter help ██")
+        print("██           You are now connected to the OTA Broker                █                                             ██")
+        print("████████████████████████████████████████████████████████████████████████████████████████████████████████████████████\n")
+        print(">>>> Enter a UDS Service:")
+        client.subscribe(response_topic)
+
+    # Callback when a message is received on the subscribed topic
+    def on_message(client, userdata, msg):
+        global first_flag
+        if not first_flag:
+            first_flag = True
+        else:
+            clear_screen()
+            decrypted_message = decrypt_message(encryption_key, msg.payload).decode('utf-8', 'ignore')
+            print("████████████████████████████████████████████████████████████████████████████████████████████████████████████████████")
+            print("██                                                                  █                                             ██")
+            print("██                                                                  ███████  Over The Air Service Manager   ████████")
+            # Display the "NTI" banner
+            for line in banner:
+                print(line)
+            print("██           Welcome to Over The Air Service Manager                █═> To show the supported services enter help ██")
+            print("██           You are now connected to the OTA Broker                █                                             ██")
+            print("████████████████████████████████████████████████████████████████████████████████████████████████████████████████████\n")
+            print(f">>>> Response on {previous_service} service: \n")
+            # Handle authentication response
+            if decrypted_message == "0x34":
+                print("Authentication Required\n")
+            elif decrypted_message == "0x78":
+                print("Request Correctly Received-Response Pending")
+            elif decrypted_message == "0x33":
+                print("Security Access Denied\n")
+            elif decrypted_message == "0x35":
+                print("Invalid Key\n")
+            elif decrypted_message == "0x67":
+                print("Security Level Unlocked\n")
+            elif decrypted_message == "0x24":
+                print("Request sequence error\n")
+            elif decrypted_message == "0x51":
+                print("Reset ECU request has just executed\n")
+            elif decrypted_message == "0x59":
+                print("Powertrain Issues:")
+                print("P0001 - Fuel Volume Regulator Control Circuit/Open")
+                print("P0100 - Mass or Volume Air Flow Circuit Malfunction\n")
+                print("Chassis Issues:")
+                print("C0035 - Left Front Wheel Speed Sensor Circuit\n")
+                print("Body Issues:")
+                print("B0024 - Driver Frontal Deployment Loop (Stage 1) Circuit\n")
+                print("Network Communication Codes:")
+                print("U0100 - Lost Communication with ECM/PCM\n")
+            elif decrypted_message == "0x54":
+                print("The DTCs has just cleared\n")
+            elif decrypted_message == "0x74":
+                print("Request Download has just executed\n")
+            elif decrypted_message == "0x75":
+                print("Request Upload has just executed\n")
+            elif decrypted_message == "0x77":
+                print("Firmware has just updated successfully\n")
+            else:
+                print("Pad response\n")
+            print(">>>> Enter a UDS Service:")
+            
+        
+    # Thread for publishing messages
+    def publish_thread(): 
+        # Extern the global variable that will hold the previous service 
+        global previous_service  
+        while True:
+            # Take input from the user
+            message = input(">>>> Enter a UDS Service:\n")  
+
+            # Handle help command
+            if message == 'help':
+                previous_service = "help"
+                print("\n\t█ █ █ █ █ █  Available Services   █ █ █ █ █ █")
+                print("\thelp ---------------------------> to seek a help")
+                print("\tunlock <security key> ----------> to unlock the security of the ECU")
+                print("\treset --------------------------> to reset the ECU")
+                print("\tread ---------------------------> to read the DTCs")
+                print("\tclear --------------------------> to clear the DTCs")
+                print("\tupload -------------------------> to make an upload request to get the Firmware from the ECU")
+                print("\tdownload -----------------------> to make a download request to download the Firmware into the ECU")
+                print("\ttransfer <hex update> ----------> to send the Firmware to be downloaded into the ECU")
+                print("\texit ---------------------------> to end the transfer of the Firmware ")
+           
+            # handle unlock access security level service 
+            elif message.startswith('unlock '):
+                # Set previous service
+                previous_service = "unlock"
+                # Service id
+                service_id = '0x27 '
+                # Extract the security key
+                securitykey = message[7:]  
+                securitykey = securitykey + '\n'
+                # Generate an authentication digest 
+                authentication_digest = calculate_sha256(service_id + securitykey + encryption_key.decode('utf-8'))
+                authentication_digest = authentication_digest + '\n'
+                # Concatenate the authentication digest and the service frame
+                authentication_digest_plus_service_frame = authentication_digest + service_id + securitykey
+                # Encrypt the whole message
+                cipher = encrypt_message(encryption_key, authentication_digest_plus_service_frame.encode('utf-8'))
+                # Publish the cipher on the OTA broker
+                client.publish(request_topic, cipher, retain=False)
+           
+            # Handle reset service     
+            elif message == 'reset':
+                # Set previous service
+                previous_service = "reset"
+                # Service id
+                service_id = '0x11 '
+                # Generate an authentication digest 
+                authentication_digest = calculate_sha256(service_id + encryption_key.decode('utf-8'))
+                authentication_digest = authentication_digest + '\n'
+                # Concatenate the authentication digest and the service frame
+                authentication_digest_plus_service_frame = authentication_digest + service_id + '\n'
+                # Encrypt the whole message
+                cipher = encrypt_message(encryption_key, authentication_digest_plus_service_frame.encode('utf-8'))
+                # Publish the cipher on the OTA broker
+                client.publish(request_topic, cipher, retain=False)
+           
+            # Handle read DTCs service     
+            elif message == 'read':
+                # Set previous service
+                previous_service = "read"
+                # Service id
+                service_id = '0x19 '
+                # Generate an authentication digest 
+                authentication_digest = calculate_sha256(service_id + encryption_key.decode('utf-8'))
+                authentication_digest = authentication_digest + '\n'
+                # Concatenate the authentication digest and the service frame
+                authentication_digest_plus_service_frame = authentication_digest + service_id + '\n'
+                # Encrypt the whole message
+                cipher = encrypt_message(encryption_key, authentication_digest_plus_service_frame.encode('utf-8'))
+                # Publish the cipher on the OTA broker
+                client.publish(request_topic, cipher, retain=False)
+           
+            # Handle clear DTCs service     
+            elif message == 'clear':
+                # Set previous service
+                previous_service = "clear"
+                # Service id
+                service_id = '0x14 '
+                # Generate an authentication digest 
+                authentication_digest = calculate_sha256(service_id + encryption_key.decode('utf-8'))
+                authentication_digest = authentication_digest + '\n'
+                # Concatenate the authentication digest and the service frame
+                authentication_digest_plus_service_frame = authentication_digest + service_id + '\n'
+                # Encrypt the whole message
+                cipher = encrypt_message(encryption_key, authentication_digest_plus_service_frame.encode('utf-8'))
+                # Publish the cipher on the OTA broker
+                client.publish(request_topic, cipher, retain=False)
+
+           
+            # Handle request download service     
+            elif message == 'download':
+                # Set previous service
+                previous_service = "reset"
+                # Service id
+                service_id = '0x34 '
+                # Generate an authentication digest 
+                authentication_digest = calculate_sha256(service_id + encryption_key.decode('utf-8'))
+                authentication_digest = authentication_digest + '\n'
+                # Concatenate the authentication digest and the service frame
+                authentication_digest_plus_service_frame = authentication_digest + service_id + '\n'
+                # Encrypt the whole message
+                cipher = encrypt_message(encryption_key, authentication_digest_plus_service_frame.encode('utf-8'))
+                # Publish the cipher on the OTA broker
+                client.publish(request_topic, cipher, retain=False)
+           
+            # Handle request upload service     
+            elif message == 'upload':
+                # Set previous service
+                previous_service = "reset"
+                # Service id
+                service_id = '0x35 '
+                # Generate an authentication digest 
+                authentication_digest = calculate_sha256(service_id + encryption_key.decode('utf-8'))
+                authentication_digest = authentication_digest + '\n'
+                # Concatenate the authentication digest and the service frame
+                authentication_digest_plus_service_frame = authentication_digest + service_id + '\n'
+                # Encrypt the whole message
+                cipher = encrypt_message(encryption_key, authentication_digest_plus_service_frame.encode('utf-8'))
+                # Publish the cipher on the OTA broker
+                client.publish(request_topic, cipher, retain=False)
+
+           
+            # Handle request download service
+            elif message.startswith('transfer '):
+                # Set previous service
+                previous_service = "transfer"
+                # Extract the file path
+                file_path = message[9:]
+                # Check the existence if the file  
+                if os.path.isfile(file_path):
+                    # Calculate sha-256 and append it at the begining of the file
+                    with open(file_path, 'r') as original_file:
+                        original_content = original_file.read()
+                        data_length = len(original_content)
+                        data_length = str(data_length) + '\n'
+                    original_content_sha = calculate_sha256(original_content)
+                    original_content_sha = original_content_sha + '\n'
+                    service_id = '0x36 '
+                    # Write the updated content back to the file
+                    with open("./temp", 'w') as updated_file:
+                        updated_file.write(original_content_sha + original_content)
+                    with open("./temp", 'rb') as file:
+                        chunks = []         # List to store the file content in 10,000-byte parts
+                        chunk_size = 10000  # Define the chunk size in bytes
+                        # Read the file as a chunks
+                        while True:
+                            chunk = file.read(chunk_size)
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                        # Publish the chunks one by one
+                        for segment in chunks:
+                            # Generate an authentication digest 
+                            authentication_digest = calculate_sha256(service_id + str(segment)+ '\n' + encryption_key.decode('utf-8'))
+                            authentication_digest = authentication_digest + '\n'
+                            # Concatenate the authentication digest and the service frame
+                            authentication_digest_plus_service_frame = (authentication_digest.encode('utf-8') + service_id.encode('utf-8') + segment).decode('utf-8')
+                            # Encrypt
+                            encrypted_content = encrypt_message(encryption_key, authentication_digest_plus_service_frame.encode('utf-8'))
+                            client.publish(request_topic, encrypted_content, retain=False)
+                            print(">>>> Encrypted Chunk sent to OTA Broker.")
+                            time.sleep(1)  
+                else:
+                    print(">>>> File not found.")
+
+            # Handle request transfer exit service     
+            elif message == 'exit':
+                # Set previous service
+                previous_service = "reset"
+                # Service id
+                service_id = '0x37 '
+                # Generate an authentication digest 
+                authentication_digest = calculate_sha256(service_id + encryption_key.decode('utf-8'))
+                authentication_digest = authentication_digest + '\n'
+                # Concatenate the authentication digest and the service frame
+                authentication_digest_plus_service_frame = authentication_digest + service_id + '\n'
+                # Encrypt the whole message
+                cipher = encrypt_message(encryption_key, authentication_digest_plus_service_frame.encode('utf-8'))
+                # Publish the cipher on the OTA broker
+                client.publish(request_topic, cipher, retain=False)
+            
+            # Handle the unsupported services
+            else:
+                print("Service Not Supported")
+            
+    # Set the callbacks for the client
+    client.on_connect = on_connect
+    client.on_message = on_message
+
+    # Connect to the MQTT broker
+    client.username_pw_set(username, password)
+    client.tls_set()
+    client.connect(broker_url, broker_port, keepalive=60)
+
+    # Start the message publishing thread
+    publishing_thread = threading.Thread(target=publish_thread)
+    publishing_thread.start()
+
+    # Start the MQTT client loop to receive messages
+    client.loop_forever()
+
+if __name__ == "__main__":
+    main()
+

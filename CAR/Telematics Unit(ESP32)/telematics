@@ -1,0 +1,862 @@
+
+/* ==================================================================== */
+/* ========================= Files Inclusion ========================== */
+/* ==================================================================== */
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <WiFiClientSecure.h>
+#include <DES.h>
+#include <SHA256.h>
+#include <string.h>
+#include <HardwareSerial.h>
+#include <FS.h>
+#include <SPIFFS.h>
+
+/* ==================================================================== */
+/* ================== Flags, Variables and Buffers ==================== */
+/* ==================================================================== */
+/* =========== WiFi Connection Details ========== */
+const char* Ssid = "Saad";
+const char* Password = "11111111";
+const unsigned long RequestTimeoutDuration = 120000; // Timeout duration in milliseconds
+unsigned long RequestStartTime;                    // Variable to store the start time
+const unsigned long ResponseTimeoutDuration = 30000; // Timeout duration in milliseconds
+unsigned long ResponseStartTime;                    // Variable to store the start time
+uint8_t ActiveFlag = 0;
+
+/* ============= Cryptography Details =========== */
+// Encryption/Decryption Key
+byte key[24] = { 'n', 't', 'i', 't', 'e', 'a', 'm' ,'n',
+                 't', 'i', 't', 'e', 'a', 'm', 'n', 't', 
+                 'i', 't', 'e', 'a', 'm', 'n', 't', 'i'};
+// Encryption/Decryption Buffers
+size_t dataSize = 20000;
+uint8_t encryptedData[20000] = {0};
+uint8_t decryptedData[20000] = {0};
+uint32_t CallbackLength = 0;
+uint32_t TrackingFlag;
+const char* FILE_PATH = "/Update.txt";
+const int LINES_PER_CHUNK = 1000;
+// Data encryption standard object
+DES des;
+
+/* ================ Hashing Details ================ */
+uint8_t hash[32];
+SHA256 sha256;
+
+/* ======== MQTT Broker Connection Details ========= */
+// MQTT Broker Parameters
+const char* MqttServer = "b8ba2b5a4d0048be8202a20c2044769c.s1.eu.hivemq.cloud";
+const char* MqttUsername = "NtiTeam";
+const char* MqttPassword = "NtiTeam_2023";
+const int   MqttPort = 8883;
+// Secure WiFi Connectivity Object
+WiFiClientSecure EspClient;
+// MQTT Client Initialization Object Using WiFi Connection
+PubSubClient MqttClient(EspClient);
+// Root Certificate 
+static const char *RootCertificate PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----
+)EOF";
+
+/* ======== Auxilary Flags and Buffers ========= */
+#define ACK           0x400 // Acknowledgement status
+#define NOTACK        0x500 // Not Acknowledgement status
+
+#define AVAILABLE     0x600
+#define UNAVAILABLE   0x700
+
+#define IDLE          0x0
+#define UNLOCK        0x1
+#define RESET         0x2
+#define READ          0x3
+#define CLEAR         0x4
+#define UPLOAD        0x5
+#define DOWNLOAD      0x6
+#define TRANSFER      0x7
+#define TRANSFER_EXIT 0x8
+
+uint16_t SystemAvailablity = AVAILABLE;
+uint16_t SystemState = IDLE;
+
+// String SecurityKey = "";
+String IncommingUpdate = "";
+char ServiceId[5];
+char SecurityKey[66];
+uint8_t SecurityAccess = 0;
+String SecurityAccessDigest = "11bbe0117742b5e0ac0999cf571a5e0d211443f3f519eeff5a8a0d3032b7a82f";
+uint8_t SecurityKeyLength = 0;
+uint8_t FirstFlag = 0;
+
+/* ==================================================================== */
+/* ============================ Prototypes ============================ */
+/* ==================================================================== */
+void initializeSystem(void); 
+void publishMessage(const char* Topic, String Payload , boolean Retained);
+void Callback(char* Topic, byte* Payload, unsigned int Length);
+void reconnectToBroker(void); 
+void padData(uint8_t* text, size_t length);
+void unpadData(uint8_t* data, size_t size);
+void encryptData(DES des, uint8_t inputData[], uint8_t encryptedData[], size_t dataSize);
+void decryptData(DES des, const uint8_t encryptedData[], uint8_t decryptedData[], size_t dataSize);
+void SYS_update(void);
+void processUpdateRequest(String &UpdateHex);
+void appendFile(const char* path, const String& message);
+void writeFile(const char* path, const String& message);
+String readFile(const char* path);
+void reinitializeBuffers(void);
+uint8_t checkAuthentication(void);
+uint8_t checkSecurityAcess(void);
+
+/* ==================================================================== */
+/* =================== Initialization and Scheduling ================== */
+/* ==================================================================== */
+// Initialization
+void setup() 
+{
+  initializeSystem();
+}
+// Scheduling
+void loop() 
+{
+  // Check if the client is connected
+  if (!MqttClient.connected())
+  {
+    reconnectToBroker();
+  } 
+  // Allow the client to process incoming messages and maintain its connection to the server
+  MqttClient.loop();
+  
+  // System Tasks
+  SYS_update();
+}
+
+/* ==================================================================== */
+/* ===================== Functions Implementation ===================== */
+/* ==================================================================== */
+/*================ Encryption Functions =================*/
+// Function to pad the messages which isn't multiple of 8
+void padData(uint8_t* text, size_t length) 
+{
+  // Calculate the padding length needed
+  int padding_length = 8 - (length % 8);
+  // Pad the text with bytes of the padding length
+  for (int i = 0; i < padding_length; i++) 
+  {
+    text[length + i] = (uint8_t)(padding_length);
+  }
+}
+// Function to unpad the messages which isn't multiple of 8
+void unpadData(uint8_t* data, size_t size) 
+{
+  // Remove PKCS7 padding
+  uint8_t padding = data[size - 1];
+  if (padding <= 8) 
+  {
+    for (size_t i = size - padding; i < size; i++) 
+    {
+      if (data[i] != padding) 
+      {
+        // Invalid padding
+        return;
+      }
+    }
+    data[size - padding] = '\0';
+  }
+}
+// Function to encrypt a message
+void encryptData(DES des, uint8_t inputData[], uint8_t encryptedData[], size_t dataSize) 
+{
+  // Pad the input data before encryption
+  padData(inputData, dataSize); 
+  // Encrypt the padded message
+  for (size_t position = 0; position < dataSize; position += 8) 
+  {
+    des.tripleEncrypt((void *)(encryptedData + position), (void *)(inputData + position), key);
+  }
+}
+// Function to decrypt a message
+void decryptData(DES des, const uint8_t encryptedData[], uint8_t decryptedData[], size_t dataSize) 
+{
+  // Decrypt the message
+  for (size_t position = 0; position < dataSize; position += 8) 
+  {
+      des.tripleDecrypt((void *)(decryptedData + position), (void *)(encryptedData + position), key);
+  }
+  // Unpad the decrypted data
+  unpadData(decryptedData, dataSize);
+}
+
+/*================ Broker Functions =================*/
+// Function to connect to MQTT Broker 
+void reconnectToBroker(void) 
+{
+  // Loop until we're reconnected
+  while (!MqttClient.connected()) 
+  {
+    Serial.print("Attempting MQTT connection...");
+    // Create a random client ID
+    String clientId = "ESP8266Client-";   
+    clientId += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (MqttClient.connect(clientId.c_str(), MqttUsername, MqttPassword)) 
+    {
+      Serial.println("connected");
+      // Subscribe to the topics here
+      MqttClient.subscribe("NTIOTA1");   
+    } 
+    else 
+    {
+      Serial.print("failed, rc=");
+      Serial.print(MqttClient.state());
+      Serial.println(" try again in 5 seconds");   // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+// Callback Function for Receiving MQTT messages 
+void Callback(char* Topic, uint8_t* Payload, unsigned int Length)
+{
+  // Reinitialize buffers
+  reinitializeBuffers();
+  // Loop on the received message and store it in a buffer
+  for (int i = 0; i < Length; i++)
+  { 
+    encryptedData[i] = (uint8_t)Payload[i];
+  }
+  CallbackLength = Length;
+  // Decrypt the received message
+  decryptData(des, encryptedData, decryptedData, Length);
+  // Check Authentication
+  uint8_t Check = checkAuthentication();
+  if(Check == 1)
+  {
+    // Set timeout parameters
+    RequestStartTime = millis();
+    ActiveFlag = 1;
+    // Check system availablity
+    if(SystemAvailablity == UNAVAILABLE)
+    {
+      // Waiting resopnse
+      reinitializeBuffers();
+      char NRC[5] = "0x78";
+      encryptData(des,(uint8_t *)NRC,encryptedData,4);
+      publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      return;
+    }
+
+    // Extract the service id
+    uint32_t Index = 0;
+    while(decryptedData[Index+65]!= ' ')
+    {
+      ServiceId[Index] = decryptedData[Index+65];
+      Index++;
+    }
+    ServiceId[Index] = '\0';
+
+    // Handle the security unlock service
+    if(strcmp(ServiceId, "0x27") == 0)
+    {
+      // Extract the security key
+      Index = 70;
+      SecurityKeyLength = 0;
+      for(uint8_t i = 0; decryptedData[Index] != '\n';i++)
+      {
+        SecurityKey[i] = (char)decryptedData[Index++];
+        SecurityKeyLength++;
+      }
+
+      // Put the system in the unlock state
+      SystemState = UNLOCK;
+      // Put the system response to be unavailable untile the service is servied
+      SystemAvailablity = UNAVAILABLE;
+    }
+    // Handle the reset service
+    else if(strcmp(ServiceId, "0x11") == 0)
+    {
+      // Put the system in the reset state
+      SystemState = RESET;
+      // Put the system response to be unavailable untile the service is servied
+      SystemAvailablity = UNAVAILABLE;
+    }
+    // Handle the read service
+    else if(strcmp(ServiceId, "0x19") == 0)
+    {
+      // Put the system in the read state
+      SystemState = READ;
+      // Put the system response to be unavailable untile the service is servied
+      SystemAvailablity = UNAVAILABLE;
+    }
+    // Handle the clear service
+    else if(strcmp(ServiceId, "0x14") == 0)
+    {
+      // Put the system in the clear state
+      SystemState = CLEAR;
+      // Put the system response to be unavailable untile the service is servied
+      SystemAvailablity = UNAVAILABLE;
+    }
+    // Handle the download service
+    else if(strcmp(ServiceId, "0x34") == 0)
+    {
+      // Put the system in the download state
+      SystemState = DOWNLOAD;
+      // Put the system response to be unavailable untile the service is servied
+      SystemAvailablity = UNAVAILABLE;
+    }
+    // Handle the upload service
+    else if(strcmp(ServiceId, "0x35") == 0)
+    {
+      // Put the system in the upload state
+      SystemState = UPLOAD;
+      // Put the system response to be unavailable untile the service is servied
+      SystemAvailablity = UNAVAILABLE;
+    }
+    // Handle the transfer service
+    else if(strcmp(ServiceId, "0x36") == 0)
+    {
+      String Temp = (String((char *)decryptedData).substring(70));
+      appendFile(FILE_PATH, Temp); 
+    }
+    // Handle the exit transfer service
+    else if(strcmp(ServiceId, "0x37") == 0)
+    {
+      // Put the system in the exit state
+      SystemState = TRANSFER;
+      // Put the system response to be unavailable untile the service is servied
+      SystemAvailablity = UNAVAILABLE;
+    }
+  }
+  else
+  {
+    reinitializeBuffers();
+    char NRC[5] = "0x34";
+    encryptData(des,(uint8_t *)NRC,encryptedData,4);
+    publishMessage("NTIOTA2",(const char *)encryptedData,true);
+    
+  }
+}
+// Function for Publishing MQTT Messages 
+void publishMessage(const char* Topic, const char* Payload, boolean Retained)
+{
+  // Check if the client is connected
+  if (!MqttClient.connected())
+  {
+    reconnectToBroker();
+  } 
+  // Check that the message was published
+  if (MqttClient.publish(Topic, Payload, Retained))
+  {
+    // Do nothing
+  }
+}
+
+/*================ System Functions =================*/
+// System Initialization 
+void initializeSystem(void)
+{
+  // Initialize the serial port
+  Serial.begin(115200, SERIAL_8N1, 16, 17);
+  while (!Serial){delay(10);} 
+
+  // Connect to the WiFi network
+  Serial.print("\nConnecting to ");
+  Serial.println(Ssid);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(Ssid, Password);
+  while (WiFi.status() != WL_CONNECTED) 
+  {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected\nIP address: ");
+  Serial.println(WiFi.localIP());
+
+  // Set the authentication certificate of the broker
+  EspClient.setCACert(RootCertificate);      
+  // Set the parameters of the broker
+  MqttClient.setServer(MqttServer, MqttPort);
+  MqttClient.setCallback(Callback);
+  // Resize receiving buffer
+  boolean Check = MqttClient.setBufferSize(20000);
+
+  // Create file
+  if (!SPIFFS.begin(true)) 
+  {
+    Serial.println("SPIFFS Mount Failed");
+    return;
+  }
+  //SPIFFS.format();
+  if (!SPIFFS.exists(FILE_PATH)) 
+  {
+    Serial.println("File does not exist. Creating...");
+    writeFile(FILE_PATH, "");
+  }
+}
+
+/*================== System Manager Task ====================*/
+void SYS_update(void)
+{
+  // Check if the timeout has occurred
+  if (millis() - RequestStartTime >= RequestTimeoutDuration && ActiveFlag == 1) 
+  {
+    // Reset all parameters
+    SystemAvailablity = AVAILABLE;
+    SecurityAccess = 0;
+    ActiveFlag = 0;
+    // Make timeout response
+  }
+  // Handle system states
+  switch(SystemState)
+  {
+    // Handle the unlock service with the target
+    case UNLOCK:
+      // Reinitialize buffers
+      reinitializeBuffers();
+      // Check security code
+      if(checkSecurityAcess() == 1)
+      {
+        char PR[5] = "0x67";
+        encryptData(des,(uint8_t *)PR,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+        SecurityAccess = 1;
+      }
+      else
+      {
+        char NRC[5] = "0x35";
+        encryptData(des,(uint8_t *)NRC,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      SystemAvailablity = AVAILABLE;
+      SystemState = IDLE;
+      break;
+    // Handle the reset service with the target
+    case RESET:
+      // Reinitialize buffers
+      reinitializeBuffers();
+      // Check Security Access
+      if(SecurityAccess == 1)
+      {
+        // Take the reset action
+        Serial.print("0x37\n");
+        // wait for an ok message
+        char ResponseMessage = 'A';
+        //ResponseStartTime = millis();
+        // || (millis() - ResponseStartTime < ResponseTimeoutDuration)
+        while(ResponseMessage != 'C' )
+        {
+          // Read input from serial monitor
+          if (Serial.available()) 
+          {
+            // Read input from serial monitor
+            Serial.readBytes(&ResponseMessage,1);
+          }
+        }
+        // Make the response
+        char PR[5] = "0x51";
+        encryptData(des,(uint8_t *)PR,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      else
+      {
+        char NRC[5] = "0x33";
+        encryptData(des,(uint8_t *)NRC,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      SystemAvailablity = AVAILABLE;
+      SystemState = IDLE;
+      break;
+    // Handle the read service with the target
+    case READ:
+      // Reinitialize buffers
+      reinitializeBuffers();
+      // Check Security Access
+      if(SecurityAccess == 1)
+      {
+        // Take the read action
+        
+        // Make the response
+        char PR[5] = "0x59";
+        encryptData(des,(uint8_t *)PR,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      else
+      {
+        char NRC[5] = "0x33";
+        encryptData(des,(uint8_t *)NRC,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      SystemAvailablity = AVAILABLE;
+      SystemState = IDLE;
+      break;
+    // Handle the clear service with the target
+    case CLEAR:
+      // Reinitialize buffers
+      reinitializeBuffers();
+      // Check Security Access
+      if(SecurityAccess == 1)
+      {
+        // Take the clear action
+        Serial.print("0x14\n");
+        // wait for an ok message
+        char ResponseMessage = 'A';
+        while(ResponseMessage != 'C' )
+        {
+          // Read input from serial monitor
+          if (Serial.available()) 
+          {
+            // Read input from serial monitor
+            Serial.readBytes(&ResponseMessage,1);
+          }
+        }
+        // Make the response
+        char PR[5] = "0x54";
+        encryptData(des,(uint8_t *)PR,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      else
+      {
+        char NRC[5] = "0x33";
+        encryptData(des,(uint8_t *)NRC,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      SystemAvailablity = AVAILABLE;
+      SystemState = IDLE;
+      break;
+    // Handle the download service with the target
+    case DOWNLOAD:
+      // Reinitialize buffers
+      reinitializeBuffers();
+      // Check Security Access
+      if(SecurityAccess == 1)
+      {
+        // Make the response
+        char PR[5] = "0x74";
+        encryptData(des,(uint8_t *)PR,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+        // Open the file that will be used to store the comming date
+        writeFile(FILE_PATH, "");
+        // Set first flag to initiate the sequence of the firmware update
+        FirstFlag = 1;
+      }
+      else
+      {
+        char NRC[5] = "0x33";
+        encryptData(des,(uint8_t *)NRC,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      SystemAvailablity = AVAILABLE;
+      SystemState = IDLE;
+      break;
+    // Handle the upload service with the target
+    case UPLOAD:
+      // Reinitialize buffers
+      reinitializeBuffers();
+      // Check Security Access
+      if(SecurityAccess == 1)
+      {
+        // Make the response
+        char PR[5] = "0x75";
+        encryptData(des,(uint8_t *)PR,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+        // Open the file that will be used to store the comming date
+        // writeFile(FILE_PATH, "");
+        // Set first flag to initiate the sequence of the firmware update
+        FirstFlag = 1;
+      }
+      else
+      {
+        char NRC[5] = "0x33";
+        encryptData(des,(uint8_t *)NRC,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      SystemAvailablity = AVAILABLE;
+      SystemState = IDLE;
+      break;
+    // Handle the transfer service with the target
+    case TRANSFER:
+      // Reinitialize buffers
+      reinitializeBuffers();
+      // Check Security Access
+      if(SecurityAccess == 1)
+      {
+        if(FirstFlag == 1)
+        {
+          // Take the reset action
+          Serial.print("0x37\n");
+          // wait for an ok message
+          char ResponseMessage = 'A';
+          //ResponseStartTime = millis();
+          // || (millis() - ResponseStartTime < ResponseTimeoutDuration)
+          while(ResponseMessage != 'C' )
+          {
+            // Read input from serial monitor
+            if (Serial.available()) 
+            {
+              // Read input from serial monitor
+              Serial.readBytes(&ResponseMessage,1);
+            }
+          }
+          delay(5000);
+          // Make the update
+          readFileInChunks();
+          // make the response
+          char PR[5] = "0x77";
+          encryptData(des,(uint8_t *)PR,encryptedData,4);
+          publishMessage("NTIOTA2",(const char *)encryptedData,true);
+          FirstFlag = 0;
+        }
+        else 
+        {
+          char NRC[5] = "0x24";
+          encryptData(des,(uint8_t *)NRC,encryptedData,4);
+          publishMessage("NTIOTA2",(const char *)encryptedData,true);
+        }
+        
+      }
+      else
+      {
+        char NRC[5] = "0x33";
+        encryptData(des,(uint8_t *)NRC,encryptedData,4);
+        publishMessage("NTIOTA2",(const char *)encryptedData,true);
+      }
+      SystemAvailablity = AVAILABLE;
+      SystemState = IDLE;
+      break;
+    default:
+      // Do nothing
+      break;
+  }
+}
+
+/*========================= Sending Update =============================*/
+void processUpdateRequest(String &UpdateHex)
+{
+  // Calculate the length of update  
+  int MessageLength = UpdateHex.length();
+  // Loop on all lines of the file and send it to the target line by line
+  for(int i = 0;i<MessageLength;i++)
+  {
+    Serial.print(UpdateHex.charAt(i));
+    if(UpdateHex[i]=='\n')
+    {
+      // wait for an ok message
+      char ResponseMessage = 'A';
+      while(ResponseMessage != 'C')
+      {
+        // Read input from serial monitor
+        if (Serial.available()) 
+        {
+          // Read input from serial monitor
+          Serial.readBytes(&ResponseMessage,1);
+        }
+      }
+    }
+  }
+  Serial.println();
+}
+
+/*========================= File Operations =========================*/
+void appendFile(const char* path, const String& message) 
+{
+  File file = SPIFFS.open(path, FILE_APPEND);
+  if (file) 
+  {
+    file.print(message);
+    file.close();
+  } else 
+  {
+    Serial.println("Failed to open file for appending");
+  }
+}
+
+void writeFile(const char* path, const String& message) 
+{
+  File file = SPIFFS.open(path, FILE_WRITE);
+  if (file) 
+  {
+    file.print(message);
+    file.close();
+  } else 
+  {
+    Serial.println("Failed to open file for writing");
+  }
+}
+
+String readFile(const char* path) 
+{
+  String fileContents = "";
+  File file = SPIFFS.open(path, FILE_READ);
+  if (file) 
+  {
+    while (file.available()) 
+    {
+      fileContents += char(file.read());
+    }
+    file.close();
+  } 
+  else 
+  {
+    Serial.println("Failed to open file for reading");
+  }
+  return fileContents;
+}
+
+// Function to read file in chunks
+void readFileInChunks(void) 
+{
+  // Open the file
+  File file = SPIFFS.open(FILE_PATH, "r");
+  if (!file) 
+  {
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+  // Auxilary variables
+  String line;
+  int linesRead = 0;
+  // Loop on the file line by line
+  while (file.available()) 
+  {
+    // Read lines up to the specified chunk size
+    for (int i = 0; i < LINES_PER_CHUNK && file.available(); ++i) 
+    {
+      line = file.readStringUntil('\n');
+      if(i > 1)
+      {
+        Serial.println(line);
+        // wait for an ok message
+        char ResponseMessage = 'A';
+        while(ResponseMessage != 'C' )
+        {
+          // Read input from serial monitor
+          if (Serial.available()) 
+          {
+            // Read input from serial monitor
+            Serial.readBytes(&ResponseMessage,1);
+          }
+          if(!(file.available()))
+          {
+            break;
+          }
+        }
+      }
+      linesRead++;
+    }
+  }
+  // Serial.println("Total lines read: " + String(linesRead));
+  file.close();
+}
+void reinitializeBuffers(void)
+{
+  for(uint32_t i = 0; i < 20000;i++)
+  {
+    encryptedData[i] = 0;
+    decryptedData[i] = 0;
+  }
+}
+
+// Temporary buffer
+char Temp[20000];
+/* ================== Check Authentication ==================== */
+uint8_t checkAuthentication(void)
+{
+  // Variable to hold the return value
+  uint8_t ReturnFlag = 0;
+  uint32_t Index = 0;
+
+  // Take the service frame
+  while((Index+65) != (CallbackLength-1))
+  {
+    Temp[Index] = decryptedData[Index+65];
+    Index++;
+  }
+  Temp[Index] = '\n';
+
+  // Add the private key to the service frame
+  for(int i = 0; i<24;i++)
+  {
+    Temp[++Index] = key[i];
+  }
+
+  // Calculate the digest for the previous composit value
+  sha256.reset();
+  sha256.update(Temp, Index+1);
+  sha256.finalize(hash, 32);
+  String CalculatedHash = "";
+  for(int i= 0; i< sizeof(hash); i++)
+  {
+    char str[3];
+    sprintf(str, "%02x", (int)hash[i]);
+    CalculatedHash.concat(String(str));
+  }
+
+  // Take the sent digest
+  char SentDigest[64];
+  for(uint8_t i = 0; i <64;i++)
+  {
+    SentDigest[i] = (char)decryptedData[i];
+  }
+
+  // Check the calculated with the sent one
+  if(CalculatedHash.equals(String(SentDigest)));
+  {
+    ReturnFlag = 1;
+  }
+  return ReturnFlag;
+}
+
+/* ===================== Check Security Access ====================*/
+uint8_t checkSecurityAcess(void)
+{
+  uint8_t ReturnFlag = 0;
+  // Calculate the digest for the received password
+  sha256.reset();
+  sha256.update(SecurityKey, SecurityKeyLength);
+  sha256.finalize(hash, 32);
+  String CalculatedHash = "";
+  for(int i= 0; i< sizeof(hash); i++)
+  {
+    char str[3];
+    sprintf(str, "%02x", (int)hash[i]);
+    CalculatedHash.concat(String(str));
+  }
+
+  // Compare the calculated digest with the saved one
+  if(CalculatedHash.equals(SecurityAccessDigest))
+  {
+    ReturnFlag = 1;
+  }
+  return ReturnFlag;
+} 
+
